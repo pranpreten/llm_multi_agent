@@ -11,6 +11,7 @@ from agents.optimization_agent import OptimizationAgent
 from utils.hitl_interface import get_hitl_interface, HitlInterface
 from utils.reporting import create_reporter, WorkflowReporter
 from utils.intelligent_summarization import create_summarizer, IntelligentSummarizer
+from utils.tool_decider import get_tool_decider
 import pandas as pd
 import numpy as np
 import json
@@ -580,7 +581,11 @@ class LLMPlannerAgent:
             # Ask user to approve or modify suggested params (HITL)
             params = self._human_approve_params(params)
 
-        agent = DynamicAnalysisAgent(self.preprocessed_data, self.target_column, task=self.problem_type, params=params)
+        # Wire up Decision LLM (e.g., qwen3:4b SLM) into ToolDecider so model/hyperparam
+        # selection actually consults the SLM instead of falling back to rule-based defaults.
+        tool_decider = get_tool_decider("hybrid", llm_agent=self.decision_llm_agent) \
+            if self.decision_llm_agent is not None else None
+        agent = DynamicAnalysisAgent(self.preprocessed_data, self.target_column, task=self.problem_type, params=params, tool_decider=tool_decider)
         results = agent.run()
         
         # User-in-the-loop decision for poor performance

@@ -96,11 +96,32 @@ class LocalLLMAgent:
             # Use ollama client to generate text; assumes ollama installed and running
             try:
                 if self.ollama is not None and not getattr(self, 'use_ollama_cli', False):
-                    # Official Python client path
-                    response = self.ollama.generate(self.model_name, prompt)
-                    # Different ollama client versions may return different shapes
+                    # Official Python client path. format='json' forces structured output;
+                    # think=False suppresses qwen3-style reasoning blocks.
+                    try:
+                        response = self.ollama.generate(
+                            self.model_name, prompt,
+                            format='json',
+                            think=False,
+                            options={'num_predict': max_tokens, 'temperature': temperature},
+                        )
+                    except TypeError:
+                        # Older ollama client without `think` kwarg
+                        response = self.ollama.generate(
+                            self.model_name, prompt,
+                            format='json',
+                            options={'num_predict': max_tokens, 'temperature': temperature},
+                        )
+                    # Modern ollama client returns dict with 'response' field
                     if isinstance(response, dict):
-                        text = response.get('output', '') or response.get('text', '') or str(response)
+                        text = (
+                            response.get('response')
+                            or response.get('output')
+                            or response.get('text')
+                            or ''
+                        )
+                    elif hasattr(response, 'response'):
+                        text = response.response
                     else:
                         text = str(response)
                 else:
@@ -118,14 +139,29 @@ class LocalLLMAgent:
                 raise RuntimeError(f"Ollama generation failed: {e}")
 
     def _extract_json_from_text(self, text: str) -> Optional[Dict[str, Any]]:
-        # Look for the first JSON object in the text and parse it
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1 and end > start:
+        """Find all balanced top-level {...} blocks and try to parse from last to first.
+        Reasoning models (e.g., qwen3) often emit thinking + JSON + prose + final JSON;
+        the last parseable block is usually the final answer.
+        """
+        candidates = []
+        depth = 0
+        start_idx = -1
+        for i, ch in enumerate(text):
+            if ch == '{':
+                if depth == 0:
+                    start_idx = i
+                depth += 1
+            elif ch == '}':
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start_idx != -1:
+                        candidates.append(text[start_idx:i + 1])
+                        start_idx = -1
+        for cand in reversed(candidates):
             try:
-                return json.loads(text[start:end+1])
+                return json.loads(cand)
             except Exception:
-                return None
+                continue
         return None
 
 
